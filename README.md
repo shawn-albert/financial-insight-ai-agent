@@ -1,5 +1,3 @@
-<p align="center">Built with ❤️ for the financial technology community</p>
-
 <div align="center">
 
 # Financial Insight AI Agent 🤖📊
@@ -152,3 +150,6 @@ We welcome contributions! Please follow these steps:
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+<p align="center">Built with ❤️ for the financial technology community</p>
