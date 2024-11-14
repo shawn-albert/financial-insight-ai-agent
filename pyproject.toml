@@ -1,0 +1,15 @@
+[project]
+name = "financial-insight-ai-agent"
+version = "0.1.0"
+description = "A multi-modal AI-driven assistant for financial and investment research leveraging AWS CDK for scalable infrastructure."
+readme = "README.md"
+requires-python = "3.12.5"
+dependencies = [
+    "aws-cdk-lib==2.167.0",
+    "boto3==1.35.60",
+    "cdk-nag==2.34.0",
+]
+
+[build-system]
+requires = ["setuptools>=63.0.0", "wheel>=0.36.0"]
+build-backend = "setuptools.build_meta"
