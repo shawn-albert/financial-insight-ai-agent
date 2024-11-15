@@ -1,5 +1,5 @@
 version = 1
-requires-python = ">=3.12"
+requires-python = ">=3.12.5"
 
 [[package]]
 name = "attrs"
@@ -126,6 +126,22 @@ wheels = [
 ]
 
 [[package]]
+name = "cdk-aws-lambda-powertools-layer"
+version = "3.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aws-cdk-lib" },
+    { name = "constructs" },
+    { name = "jsii" },
+    { name = "publication" },
+    { name = "typeguard" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/da/9d/95464de325cf5f9d479ba5c666064c0c9ac7a32f6ef631050bdcea18aefd/cdk-aws-lambda-powertools-layer-3.8.0.tar.gz", hash = "sha256:7b6e5583901e59fb6e04a8291a5bcc5ba5f89a04ee58a42055164588bc5ee996", size = 39269 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/95/0c/a968bb35553826188c96c80b9e4d865e989c36e057dfe4a1c918afb16689/cdk_aws_lambda_powertools_layer-3.8.0-py3-none-any.whl", hash = "sha256:581320334faef2ac5fd86f503e670fb9cbe8b671b979152a51e083a35654aab3", size = 38357 },
+]
+
+[[package]]
 name = "cdk-nag"
 version = "2.34.0"
 source = { registry = "https://pypi.org/simple" }
@@ -158,10 +174,11 @@ wheels = [
 [[package]]
 name = "financial-insight-ai-agent"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "aws-cdk-lib" },
     { name = "boto3" },
+    { name = "cdk-aws-lambda-powertools-layer" },
     { name = "cdk-nag" },
 ]
 
@@ -169,6 +186,7 @@ dependencies = [
 requires-dist = [
     { name = "aws-cdk-lib", specifier = "==2.167.0" },
     { name = "boto3", specifier = "==1.35.60" },
+    { name = "cdk-aws-lambda-powertools-layer", specifier = ">=3.8.0" },
     { name = "cdk-nag", specifier = "==2.34.0" },
 ]
 
