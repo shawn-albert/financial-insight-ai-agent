@@ -6,6 +6,8 @@ and Lambda integrations. It handles authentication, request processing, and
 integrates with Bedrock for LLM capabilities.
 """
 
+import os
+import sys
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -17,9 +19,11 @@ from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_s3 as s3
-from lib.utils.constants import DOCKER_EXCLUDE_PATTERNS
 
 from constructs import Construct
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
+from lib.constants.docker import DOCKER_EXCLUDE_PATTERNS
 
 from .auth import Auth
 from .usage_analysis import UsageAnalysis
