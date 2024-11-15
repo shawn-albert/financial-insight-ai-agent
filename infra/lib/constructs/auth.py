@@ -9,11 +9,11 @@ for user management.
 from dataclasses import dataclass
 from typing import List
 
-from aws_cdk import CfnOutput, CustomResource, Duration, RemovalPolicy
+from aws_cdk import CustomResource, RemovalPolicy
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
-from aws_cdk import aws_secretsmanager as secretsmanager
+from cdk_aws_lambda_powertools_layer import LambdaPowertoolsLayer
 
 from constructs import Construct
 
@@ -69,6 +69,19 @@ class Auth(Construct):
         """
         super().__init__(scope, construct_id)
 
+        powertools_layer = LambdaPowertoolsLayer(
+            self,
+            "PowertoolsLayer",
+            version="3.3.0",
+            include_extras=True,
+        )
+
+        common_lambda_environment = {
+            "POWERTOOLS_SERVICE_NAME": "financial-insight-auth",
+            "POWERTOOLS_METRICS_NAMESPACE": "FinancialInsightAgent",
+            "LOG_LEVEL": "INFO",
+        }
+
         self.user_pool = cognito.UserPool(
             self,
             "UserPool",
@@ -91,7 +104,6 @@ class Auth(Construct):
 
         if props.identity_providers:
             self._configure_identity_providers(props)
-
             self.user_pool.add_domain(
                 "Domain",
                 cognito_domain=cognito.CognitoDomainOptions(
@@ -102,134 +114,48 @@ class Auth(Construct):
         self._create_user_groups()
 
         if props.auto_join_user_groups:
-            self._configure_auto_join_groups(props.auto_join_user_groups)
+            self._configure_auto_join_groups(
+                props.auto_join_user_groups,
+                powertools_layer,
+                common_lambda_environment,
+            )
 
         if props.allowed_signup_email_domains:
-            self._configure_email_domain_check(props.allowed_signup_email_domains)
+            self._configure_email_domain_check(
+                props.allowed_signup_email_domains,
+                powertools_layer,
+                common_lambda_environment,
+            )
 
         self._create_outputs()
 
-    def _configure_client_props(self, props: AuthProps) -> dict:
-        """
-        Configure Cognito user pool client properties.
-
-        Args:
-            props: Authentication properties
-
-        Returns:
-            Dictionary of client configuration properties
-        """
-        default_props = {
-            "id_token_validity": Duration.days(1),
-            "auth_flows": cognito.AuthFlow(
-                user_password=True,
-                user_srp=True,
-            ),
-        }
-
-        if not any(props.identity_providers):
-            return default_props
-
-        return {
-            **default_props,
-            "o_auth": cognito.OAuthSettings(
-                callback_urls=[props.origin],
-                logout_urls=[props.origin],
-            ),
-            "supported_identity_providers": self._get_identity_providers(
-                props.identity_providers
-            ),
-        }
-
-    def _configure_identity_providers(self, props: AuthProps) -> None:
-        """
-        Configure external identity providers.
-
-        Args:
-            props: Authentication properties
-        """
-        for provider in props.identity_providers:
-            secret = secretsmanager.Secret.from_secret_name_v2(
-                self,
-                f"Secret-{provider['secret_name']}",
-                provider["secret_name"],
-            )
-
-            client_id = secret.secret_value_from_json("clientId").to_string()
-            client_secret = secret.secret_value_from_json("clientSecret")
-
-            if provider["service"] == "google":
-                google_provider = cognito.UserPoolIdentityProviderGoogle(
-                    self,
-                    f"GoogleProvider-{provider['secret_name']}",
-                    user_pool=self.user_pool,
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    scopes=["openid", "email"],
-                    attribute_mapping={
-                        "email": cognito.ProviderAttribute.GOOGLE_EMAIL,
-                    },
-                )
-                self.client.node.add_dependency(google_provider)
-
-            elif provider["service"] == "oidc":
-                issuer_url = secret.secret_value_from_json("issuerUrl").to_string()
-                oidc_provider = cognito.UserPoolIdentityProviderOidc(
-                    self,
-                    f"OidcProvider-{provider['secret_name']}",
-                    user_pool=self.user_pool,
-                    client_id=client_id,
-                    client_secret=client_secret.to_string(),
-                    issuer_url=issuer_url,
-                    attribute_mapping={
-                        "email": cognito.ProviderAttribute.other("EMAIL"),
-                    },
-                    scopes=["openid", "email"],
-                )
-                self.client.node.add_dependency(oidc_provider)
-
-    def _create_user_groups(self) -> None:
-        """
-        Create default user groups in the Cognito user pool.
-        """
-        cognito.CfnUserPoolGroup(
-            self,
-            "AdminGroup",
-            group_name="Admin",
-            user_pool_id=self.user_pool.user_pool_id,
-        )
-
-        cognito.CfnUserPoolGroup(
-            self,
-            "CreatingBotAllowedGroup",
-            group_name="CreatingBotAllowed",
-            user_pool_id=self.user_pool.user_pool_id,
-        )
-
-        cognito.CfnUserPoolGroup(
-            self,
-            "PublishAllowedGroup",
-            group_name="PublishAllowed",
-            user_pool_id=self.user_pool.user_pool_id,
-        )
-
-    def _configure_auto_join_groups(self, groups: List[str]) -> None:
+    def _configure_auto_join_groups(
+        self,
+        groups: List[str],
+        powertools_layer: lambda_.ILayerVersion,
+        lambda_env: dict,
+    ) -> None:
         """
         Configure automatic group assignment for new users.
 
         Args:
             groups: List of groups to automatically join
+            powertools_layer: AWS Lambda Powertools layer
+            lambda_env: Common Lambda environment variables
         """
         add_to_groups_function = lambda_.Function(
             self,
             "AddUserToGroups",
             runtime=lambda_.Runtime.PYTHON_3_12,
+            architecture=lambda_.Architecture.ARM_64,
             handler="add_user_to_groups.handler",
             code=lambda_.Code.from_asset("backend/auth/add_user_to_groups"),
             environment={
+                **lambda_env,
                 "USER_POOL_ID": self.user_pool.user_pool_id,
                 "AUTO_JOIN_USER_GROUPS": str(groups),
             },
+            layers=[powertools_layer],
         )
 
         add_to_groups_function.add_permission(
@@ -248,11 +174,14 @@ class Auth(Construct):
             "TriggerFunction",
             uuid="a84c6122-180e-48fc-afaf-f4d65da2b370",
             runtime=lambda_.Runtime.PYTHON_3_12,
-            code=lambda_.Code.from_asset("custom-resources/cognito-trigger"),
+            architecture=lambda_.Architecture.ARM_64,
+            code=lambda_.Code.from_asset("custom_resources/cognito_trigger"),
             handler="index.handler",
             environment={
+                **lambda_env,
                 "USER_POOL_ID": self.user_pool.user_pool_id,
             },
+            layers=[powertools_layer],
         )
 
         self.user_pool.grant(
@@ -273,43 +202,35 @@ class Auth(Construct):
             },
         )
 
-    def _configure_email_domain_check(self, domains: List[str]) -> None:
+    def _configure_email_domain_check(
+        self,
+        domains: List[str],
+        powertools_layer: lambda_.ILayerVersion,
+        lambda_env: dict,
+    ) -> None:
         """
         Configure email domain restriction for signup.
 
         Args:
             domains: List of allowed email domains
+            powertools_layer: AWS Lambda Powertools layer
+            lambda_env: Common Lambda environment variables
         """
         check_email_function = lambda_.Function(
             self,
             "CheckEmailDomain",
             runtime=lambda_.Runtime.PYTHON_3_12,
+            architecture=lambda_.Architecture.ARM_64,
             handler="check_email_domain.handler",
             code=lambda_.Code.from_asset("backend/auth/check_email_domain"),
             environment={
+                **lambda_env,
                 "ALLOWED_SIGN_UP_EMAIL_DOMAINS": str(domains),
             },
+            layers=[powertools_layer],
         )
 
         self.user_pool.add_trigger(
             cognito.UserPoolOperation.PRE_SIGN_UP,
             check_email_function,
-        )
-
-    def _create_outputs(self) -> None:
-        """
-        Create CloudFormation outputs for the authentication resources.
-        """
-        CfnOutput(
-            self,
-            "UserPoolId",
-            value=self.user_pool.user_pool_id,
-            description="ID of the Cognito user pool",
-        )
-
-        CfnOutput(
-            self,
-            "UserPoolClientId",
-            value=self.client.user_pool_client_id,
-            description="ID of the Cognito user pool client",
         )
