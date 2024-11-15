@@ -1,12 +1,10 @@
 """
-Entry point for Financial Insight Agent deployment.
+Main entry point for the Financial Insight Agent CDK application.
 
-This module controls the deployment of CDK stacks including:
-- Frontend and access security via WAF
-- Regional Bedrock resources and dependencies
-- Core authentication and API infrastructure
-- LLM integration and knowledge bases
-- User management and authorization
+This module initializes and configures the main application stacks including:
+- WAF for frontend protection
+- Regional resources for Bedrock integration
+- Main agent functionality
 """
 
 #!/usr/bin/env python3
