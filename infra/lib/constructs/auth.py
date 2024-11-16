@@ -183,7 +183,9 @@ class Auth(Construct):
             uuid="a84c6122-180e-48fc-afaf-f4d65da2b370",
             runtime=lambda_.Runtime.PYTHON_3_12,
             architecture=lambda_.Architecture.ARM_64,
-            code=lambda_.Code.from_asset("custom_resources/cognito_trigger"),
+            code=lambda_.Code.from_asset(
+                os.path.join(PROJECT_ROOT, "backend", "auth", "cognito_trigger")
+            ),
             handler="index.handler",
             environment={
                 **lambda_env,
