@@ -9,10 +9,11 @@ for user management.
 from dataclasses import dataclass
 from typing import List
 
-from aws_cdk import CustomResource, RemovalPolicy
+from aws_cdk import CfnOutput, CustomResource, RemovalPolicy
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_secretsmanager as secretsmanager
 from cdk_aws_lambda_powertools_layer import LambdaPowertoolsLayer
 
 from constructs import Construct
@@ -233,4 +234,168 @@ class Auth(Construct):
         self.user_pool.add_trigger(
             cognito.UserPoolOperation.PRE_SIGN_UP,
             check_email_function,
+        )
+
+    def _configure_client_props(self, props: AuthProps) -> dict:
+        """
+        Configure Cognito user pool client properties.
+
+        Args:
+            props: Authentication properties
+
+        Returns:
+            Dictionary of client configuration properties
+        """
+        default_props = {
+            "auth_flows": cognito.AuthFlow(
+                user_password=True,
+                user_srp=True,
+            ),
+        }
+
+        if not any(props.identity_providers):
+            return default_props
+
+        return {
+            **default_props,
+            "o_auth": cognito.OAuthSettings(
+                callback_urls=[props.origin],
+                logout_urls=[props.origin],
+            ),
+            "supported_identity_providers": self._get_supported_providers(
+                props.identity_providers
+            ),
+        }
+
+    def _get_supported_providers(
+        self, providers: List[dict]
+    ) -> List[cognito.UserPoolClientIdentityProvider]:
+        """
+        Get list of supported identity providers.
+
+        Args:
+            providers: List of identity provider configurations
+
+        Returns:
+            List of supported Cognito identity providers
+        """
+        supported_providers = []
+
+        for provider in providers:
+            if provider["service"] == "google":
+                supported_providers.append(
+                    cognito.UserPoolClientIdentityProvider.GOOGLE
+                )
+            elif provider["service"] == "facebook":
+                supported_providers.append(
+                    cognito.UserPoolClientIdentityProvider.FACEBOOK
+                )
+            elif provider["service"] == "amazon":
+                supported_providers.append(
+                    cognito.UserPoolClientIdentityProvider.AMAZON
+                )
+            elif provider["service"] == "apple":
+                supported_providers.append(cognito.UserPoolClientIdentityProvider.APPLE)
+            elif provider["service"] == "oidc":
+                if not provider.get("service_name"):
+                    raise ValueError("service_name required for OIDC provider")
+                supported_providers.append(
+                    cognito.UserPoolClientIdentityProvider.custom(
+                        provider["service_name"]
+                    )
+                )
+
+        if providers:
+            supported_providers.append(cognito.UserPoolClientIdentityProvider.COGNITO)
+
+        return supported_providers
+
+    def _configure_identity_providers(self, props: AuthProps) -> None:
+        """
+        Configure external identity providers.
+
+        Args:
+            props: Authentication properties
+        """
+        for provider in props.identity_providers:
+            secret = secretsmanager.Secret.from_secret_name_v2(
+                self,
+                f"Secret-{provider['secret_name']}",
+                provider["secret_name"],
+            )
+
+            client_id = secret.secret_value_from_json("clientId").to_string()
+            client_secret = secret.secret_value_from_json("clientSecret")
+
+            if provider["service"] == "google":
+                google_provider = cognito.UserPoolIdentityProviderGoogle(
+                    self,
+                    f"GoogleProvider-{provider['secret_name']}",
+                    user_pool=self.user_pool,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scopes=["openid", "email"],
+                    attribute_mapping={
+                        "email": cognito.ProviderAttribute.GOOGLE_EMAIL,
+                    },
+                )
+                self.client.node.add_dependency(google_provider)
+
+            elif provider["service"] == "oidc":
+                issuer_url = secret.secret_value_from_json("issuerUrl").to_string()
+                oidc_provider = cognito.UserPoolIdentityProviderOidc(
+                    self,
+                    f"OidcProvider-{provider['secret_name']}",
+                    user_pool=self.user_pool,
+                    client_id=client_id,
+                    client_secret=client_secret.to_string(),
+                    issuer_url=issuer_url,
+                    attribute_mapping={
+                        "email": cognito.ProviderAttribute.other("EMAIL"),
+                    },
+                    scopes=["openid", "email"],
+                )
+                self.client.node.add_dependency(oidc_provider)
+
+    def _create_user_groups(self) -> None:
+        """
+        Create default user groups in the Cognito user pool.
+        """
+        cognito.CfnUserPoolGroup(
+            self,
+            "AdminGroup",
+            group_name="Admin",
+            user_pool_id=self.user_pool.user_pool_id,
+        )
+
+        cognito.CfnUserPoolGroup(
+            self,
+            "CreatingBotAllowedGroup",
+            group_name="CreatingBotAllowed",
+            user_pool_id=self.user_pool.user_pool_id,
+        )
+
+        cognito.CfnUserPoolGroup(
+            self,
+            "PublishAllowedGroup",
+            group_name="PublishAllowed",
+            user_pool_id=self.user_pool.user_pool_id,
+        )
+
+    def _create_outputs(self) -> None:
+        """
+        Create CloudFormation outputs for authentication resources.
+        """
+        CfnOutput(
+            self,
+            "UserPoolId",
+            value=self.user_pool.user_pool_id,
+            description="ID of the Cognito user pool",
+        )
+
+        CfnOutput(
+            self,
+            "UserPoolClientId",
+            value=self.client.user_pool_client_id,
+            description="ID of the Cognito user pool client",
         )
