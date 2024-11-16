@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from aws_cdk import CfnOutput, Duration, Stack
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_apigatewayv2 as apigwv2
 from aws_cdk import aws_apigatewayv2_integrations as integrations
 from aws_cdk import aws_dynamodb as dynamodb
@@ -97,6 +97,7 @@ class WebSocket(Construct):
             auto_delete_objects=True,
             server_access_logs_bucket=props.access_log_bucket,
             server_access_logs_prefix="LargePayloadSupportBucket",
+            removal_policy=RemovalPolicy.DESTROY,
         )
 
         handler_role = self._create_handler_role(props, large_payload_bucket)
