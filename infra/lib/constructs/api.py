@@ -6,8 +6,7 @@ and Lambda integrations. It handles authentication, request processing, and
 integrates with Bedrock for LLM capabilities.
 """
 
-import os
-import sys
+from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -22,7 +21,7 @@ from aws_cdk import aws_s3 as s3
 
 from constructs import Construct
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
+project_root = Path(__file__).parent.parent.parent
 from lib.constants.docker import DOCKER_EXCLUDE_PATTERNS
 
 from .auth import Auth

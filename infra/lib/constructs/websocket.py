@@ -6,6 +6,7 @@ for real-time communication, particularly for streaming responses from the LLM.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from aws_cdk import CfnOutput, Duration, Stack
@@ -15,9 +16,11 @@ from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_s3 as s3
-from lib.utils.constants import DOCKER_EXCLUDE_PATTERNS
 
 from constructs import Construct
+
+project_root = Path(__file__).parent.parent.parent
+from lib.constants.docker import DOCKER_EXCLUDE_PATTERNS
 
 from .auth import Auth
 
