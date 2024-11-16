@@ -6,8 +6,8 @@ and Lambda integrations. It handles authentication, request processing, and
 integrates with Bedrock for LLM capabilities.
 """
 
+from dataclasses import dataclass, field
 from pathlib import Path
-from dataclasses import dataclass
 from typing import List, Optional
 
 from aws_cdk import CfnOutput, Duration, Stack
@@ -35,25 +35,25 @@ class ApiProps:
 
     Attributes:
         database: DynamoDB table for data storage
-        cors_allow_origins: List of allowed CORS origins
         auth: Authentication construct instance
         bedrock_region: Region for Bedrock services
         table_access_role: IAM role for table access
         document_bucket: S3 bucket for document storage
         large_message_bucket: S3 bucket for large messages
-        usage_analysis: Usage analysis construct instance
         enable_mistral: Whether Mistral model support is enabled
+        cors_allow_origins: Optional list of allowed CORS origins
+        usage_analysis: Optional usage analysis construct instance
     """
 
     database: dynamodb.ITable
-    cors_allow_origins: List[str]
     auth: Auth
     bedrock_region: str
     table_access_role: iam.IRole
     document_bucket: s3.IBucket
     large_message_bucket: s3.IBucket
-    usage_analysis: Optional[UsageAnalysis]
     enable_mistral: bool
+    cors_allow_origins: List[str] = field(default_factory=lambda: ["*"])
+    usage_analysis: Optional[UsageAnalysis] = None
 
 
 class Api(Construct):
