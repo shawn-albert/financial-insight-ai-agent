@@ -9,7 +9,7 @@ application, SSL configuration, and integration with WAF protection.
 from dataclasses import dataclass
 from typing import List, Optional
 
-from aws_cdk import CfnOutput, RemovalPolicy, Stack
+from aws_cdk import BundlingOptions, CfnOutput, DockerImage, RemovalPolicy, Stack
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_s3 as s3
@@ -190,30 +190,29 @@ class Frontend(Construct):
                 }
             )
 
-        s3_deployment.BucketDeployment(
-            self,
-            "ReactDeployment",
-            sources=[
-                s3_deployment.Source.asset(
-                    "../frontend",
-                    bundling=s3_deployment.BundlingOptions(
-                        image=s3_deployment.BundlingImage.from_asset(
-                            "../frontend",
-                            file="Dockerfile.build",
+            s3_deployment.BucketDeployment(
+                self,
+                "ReactDeployment",
+                sources=[
+                    s3_deployment.Source.asset(
+                        "../frontend",
+                        bundling=BundlingOptions(
+                            image=DockerImage.from_build(
+                                "../frontend", file="Dockerfile.build"
+                            ),
+                            command=[
+                                "bash",
+                                "-c",
+                                "npm ci && npm run build && cp -r dist/* /asset-output/",
+                            ],
+                            environment=build_environment,
                         ),
-                        command=[
-                            "bash",
-                            "-c",
-                            "npm ci && npm run build && cp -r dist/* /asset-output/",
-                        ],
-                        environment=build_environment,
                     ),
-                ),
-            ],
-            destination_bucket=self.asset_bucket,
-            distribution=self.distribution,
-            distribution_paths=["/*"],
-        )
+                ],
+                destination_bucket=self.asset_bucket,
+                distribution=self.distribution,
+                distribution_paths=["/*"],
+            )
 
         if identity_providers:
             CfnOutput(
