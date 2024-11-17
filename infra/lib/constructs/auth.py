@@ -2,14 +2,14 @@
 Authentication Construct Implementation for Financial Insight Agent.
 
 This module implements authentication and authorization using Amazon Cognito,
-supporting multiple identity providers, user groups, and custom triggers
-for user management.
+supporting multiple identity providers, user groups, and custom triggers for
+user management with full observability and monitoring capabilities.
 """
 
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 
@@ -17,6 +17,7 @@ from aws_cdk import CfnOutput, CustomResource, Duration, RemovalPolicy
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_logs as logs
 from aws_cdk import aws_secretsmanager as secretsmanager
 from cdk_aws_lambda_powertools_layer import LambdaPowertoolsLayer
 
@@ -45,6 +46,56 @@ class AuthProps:
     self_signup_enabled: bool
 
 
+class LambdaDefaults:
+    """
+    Default configurations for Lambda functions.
+
+    This class provides a centralized way to manage common Lambda function
+    configurations like architecture, runtime, insights, tracing and logging.
+    """
+
+    INSIGHTS_ARN = (
+        "arn:aws:lambda:us-east-1:580247275435:layer:LambdaInsightsExtension-Arm64:20"
+    )
+    ARCHITECTURE = lambda_.Architecture.ARM_64
+    RUNTIME = lambda_.Runtime.PYTHON_3_12
+    MEMORY_SIZE = 512
+    TIMEOUT = Duration.minutes(5)
+    LOG_RETENTION = logs.RetentionDays.TWO_WEEKS
+
+    @staticmethod
+    def get_common_config(scope: Construct, function_id: str) -> Dict:
+        """
+        Get common Lambda function configuration.
+
+        Args:
+            scope: CDK construct scope
+            function_id: Function identifier for log group naming
+
+        Returns:
+            Dictionary containing common Lambda configuration
+        """
+        log_group = logs.LogGroup(
+            scope,
+            f"{function_id}LogGroup",
+            retention=LambdaDefaults.LOG_RETENTION,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
+        return {
+            "architecture": LambdaDefaults.ARCHITECTURE,
+            "runtime": LambdaDefaults.RUNTIME,
+            "memory_size": LambdaDefaults.MEMORY_SIZE,
+            "timeout": LambdaDefaults.TIMEOUT,
+            "insights_version": lambda_.LambdaInsightsVersion.from_insight_version_arn(
+                LambdaDefaults.INSIGHTS_ARN
+            ),
+            "tracing": lambda_.Tracing.ACTIVE,
+            "log_group": log_group,
+            "logging_format": lambda_.LoggingFormat.JSON,
+        }
+
+
 class Auth(Construct):
     """
     Authentication infrastructure for the Financial Insight Agent.
@@ -52,6 +103,14 @@ class Auth(Construct):
     This construct creates and manages Cognito user pools, clients, and identity
     providers. It supports email domain restrictions, automatic group assignment,
     and multiple authentication providers.
+
+    All Lambda functions include:
+    - AWS Lambda Powertools for structured logging, tracing and monitoring
+    - CloudWatch Lambda Insights for enhanced monitoring
+    - X-Ray tracing enabled
+    - JSON log format
+    - 2 week log retention
+    - ARM64 architecture optimization
 
     Attributes:
         user_pool: Cognito user pool for authentication
@@ -79,10 +138,10 @@ class Auth(Construct):
             "PowertoolsLayer",
             version="3.3.0",
             include_extras=True,
-            compatible_architectures=[lambda_.Architecture.ARM_64],
+            compatible_architectures=[LambdaDefaults.ARCHITECTURE],
         )
 
-        common_lambda_environment = {
+        lambda_env = {
             "POWERTOOLS_SERVICE_NAME": "financial-insight-auth",
             "POWERTOOLS_METRICS_NAMESPACE": "FinancialInsightAgent",
             "LOG_LEVEL": "INFO",
@@ -123,14 +182,14 @@ class Auth(Construct):
             self._configure_auto_join_groups(
                 props.auto_join_user_groups,
                 powertools_layer,
-                common_lambda_environment,
+                lambda_env,
             )
 
         if props.allowed_signup_email_domains:
             self._configure_email_domain_check(
                 props.allowed_signup_email_domains,
                 powertools_layer,
-                common_lambda_environment,
+                lambda_env,
             )
 
         self._create_outputs()
@@ -149,11 +208,11 @@ class Auth(Construct):
             powertools_layer: AWS Lambda Powertools layer
             lambda_env: Common Lambda environment variables
         """
+        common_config = LambdaDefaults.get_common_config(self, "AddUserToGroups")
+
         add_to_groups_function = lambda_.Function(
             self,
             "AddUserToGroups",
-            runtime=lambda_.Runtime.PYTHON_3_12,
-            architecture=lambda_.Architecture.ARM_64,
             handler="index.handler",
             code=lambda_.Code.from_asset(
                 os.path.join(PROJECT_ROOT, "backend", "auth", "add_user_to_groups")
@@ -164,6 +223,8 @@ class Auth(Construct):
                 "AUTO_JOIN_USER_GROUPS": str(groups),
             },
             layers=[powertools_layer],
+            description="Automatically adds newly confirmed users to specified Cognito user groups",
+            **common_config,
         )
 
         add_to_groups_function.add_permission(
@@ -177,23 +238,22 @@ class Auth(Construct):
             "cognito-idp:AdminAddUserToGroup",
         )
 
+        trigger_config = LambdaDefaults.get_common_config(self, "TriggerFunction")
         trigger_function = lambda_.SingletonFunction(
             self,
             "TriggerFunction",
             uuid="a84c6122-180e-48fc-afaf-f4d65da2b370",
-            runtime=lambda_.Runtime.PYTHON_3_12,
-            architecture=lambda_.Architecture.ARM_64,
+            handler="index.handler",
             code=lambda_.Code.from_asset(
                 os.path.join(PROJECT_ROOT, "backend", "auth", "cognito_trigger")
             ),
-            handler="index.handler",
-            timeout=Duration.minutes(15),
-            memory_size=512,
             environment={
                 **lambda_env,
                 "USER_POOL_ID": self.user_pool.user_pool_id,
             },
             layers=[powertools_layer],
+            description="Manages Cognito User Pool triggers via CloudFormation custom resources",
+            **trigger_config,
         )
 
         self.user_pool.grant(
@@ -228,11 +288,11 @@ class Auth(Construct):
             powertools_layer: AWS Lambda Powertools layer
             lambda_env: Common Lambda environment variables
         """
+        common_config = LambdaDefaults.get_common_config(self, "CheckEmailDomain")
+
         check_email_function = lambda_.Function(
             self,
             "CheckEmailDomain",
-            runtime=lambda_.Runtime.PYTHON_3_12,
-            architecture=lambda_.Architecture.ARM_64,
             handler="index.handler",
             code=lambda_.Code.from_asset(
                 os.path.join(PROJECT_ROOT, "backend", "auth", "check_email_domain")
@@ -242,6 +302,8 @@ class Auth(Construct):
                 "ALLOWED_SIGN_UP_EMAIL_DOMAINS": str(domains),
             },
             layers=[powertools_layer],
+            description="Validates email domains during user signup against allowlist",
+            **common_config,
         )
 
         self.user_pool.add_trigger(

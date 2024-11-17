@@ -3,31 +3,26 @@ Embeddings Infrastructure for Financial Insight Agent.
 
 This module implements the embeddings infrastructure using AWS Bedrock,
 handling the synchronization and management of knowledge base data through
-state machines and event processing.
+state machines and event processing with full observability and monitoring.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
-from aws_cdk import (
-    CfnOutput,
-    Duration,
-    RemovalPolicy,
-    Stack,
-    aws_dynamodb as dynamodb,
-    aws_iam as iam,
-    aws_lambda as lambda_,
-    aws_pipes as pipes,
-    aws_logs as logs,
-    aws_s3 as s3,
-    aws_stepfunctions as sfn,
-    aws_stepfunctions_tasks as sfn_tasks,
-    aws_codebuild as codebuild,
-)
+from aws_cdk import Duration, RemovalPolicy, Stack
+from aws_cdk import aws_codebuild as codebuild
+from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_iam as iam
+from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_logs as logs
+from aws_cdk import aws_pipes as pipes
+from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_stepfunctions as sfn
+from aws_cdk import aws_stepfunctions_tasks as sfn_tasks
 from cdk_aws_lambda_powertools_layer import LambdaPowertoolsLayer
-from constructs import Construct
-
 from lib.utils.constants import DOCKER_EXCLUDE_PATTERNS
+
+from constructs import Construct
 
 
 @dataclass
@@ -52,6 +47,54 @@ class EmbeddingsProps:
     use_standby_replicas: bool
 
 
+class LambdaConfig:
+    """
+    Shared Lambda function configuration.
+
+    This class centralizes Lambda configuration including monitoring,
+    insights, logging and performance settings.
+    """
+
+    INSIGHTS_LAYER_ARN = (
+        "arn:aws:lambda:us-east-1:580247275435:layer:LambdaInsightsExtension-Arm64:20"
+    )
+    ARCHITECTURE = lambda_.Architecture.ARM_64
+    MEMORY_SIZE = 512
+    TIMEOUT = Duration.minutes(1)
+    LOG_RETENTION = logs.RetentionDays.TWO_WEEKS
+
+    @staticmethod
+    def get_lambda_defaults(scope: Construct, function_id: str) -> Dict:
+        """
+        Get default Lambda configuration with monitoring.
+
+        Args:
+            scope: CDK construct scope
+            function_id: Function identifier for naming
+
+        Returns:
+            Dictionary of Lambda configuration options
+        """
+        log_group = logs.LogGroup(
+            scope,
+            f"{function_id}LogGroup",
+            retention=LambdaConfig.LOG_RETENTION,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
+        return {
+            "architecture": LambdaConfig.ARCHITECTURE,
+            "memory_size": LambdaConfig.MEMORY_SIZE,
+            "timeout": LambdaConfig.TIMEOUT,
+            "insights_version": lambda_.LambdaInsightsVersion.from_insight_version_arn(
+                LambdaConfig.INSIGHTS_LAYER_ARN
+            ),
+            "log_group": log_group,
+            "logging_format": lambda_.LoggingFormat.JSON,
+            "tracing": lambda_.Tracing.ACTIVE,
+        }
+
+
 class Embeddings(Construct):
     """
     Embeddings infrastructure for the Financial Insight Agent.
@@ -61,6 +104,14 @@ class Embeddings(Construct):
     - Event processing pipeline
     - Lambda functions for embeddings operations
     - Knowledge base integration
+
+    All Lambda functions include:
+    - AWS Lambda Powertools for structured logging and tracing
+    - CloudWatch Lambda Insights for enhanced monitoring
+    - X-Ray tracing enabled
+    - JSON log format
+    - 2 week log retention
+    - ARM64 architecture optimization
 
     Attributes:
         removal_handler: Lambda function for cleanup operations
@@ -86,6 +137,8 @@ class Embeddings(Construct):
             self,
             "PowertoolsLayer",
             version="3.3.0",
+            include_extras=True,
+            compatible_architectures=[LambdaConfig.ARCHITECTURE],
         )
 
         lambda_env = {
@@ -96,7 +149,8 @@ class Embeddings(Construct):
 
         self._update_sync_status_handler = self._create_lambda(
             "UpdateSyncStatus",
-            "embedding_statemachine.bedrock_knowledge_base.update_bot_status.handler",
+            "embedding_statemachine.bedrock_knowledge_base.update_bot_status.index.handler",
+            "Updates bot sync status in DynamoDB during state machine execution",
             powertools_layer,
             lambda_env,
             props,
@@ -104,7 +158,8 @@ class Embeddings(Construct):
 
         self._fetch_stack_output_handler = self._create_lambda(
             "FetchStackOutput",
-            "embedding_statemachine.bedrock_knowledge_base.fetch_stack_output.handler",
+            "embedding_statemachine.bedrock_knowledge_base.fetch_stack_output.index.handler",
+            "Retrieves CloudFormation outputs for knowledge base configuration",
             powertools_layer,
             lambda_env,
             props,
@@ -112,7 +167,8 @@ class Embeddings(Construct):
 
         self._store_knowledge_base_handler = self._create_lambda(
             "StoreKnowledgeBase",
-            "embedding_statemachine.bedrock_knowledge_base.store_knowledge_base_id.handler",
+            "embedding_statemachine.bedrock_knowledge_base.store_knowledge_base_id.index.handler",
+            "Stores knowledge base IDs and configurations in DynamoDB",
             powertools_layer,
             lambda_env,
             props,
@@ -121,6 +177,7 @@ class Embeddings(Construct):
         self._store_guardrail_handler = self._create_lambda(
             "StoreGuardrail",
             "embedding_statemachine.guardrails.store_guardrail_arn.handler",
+            "Stores guardrail configurations for knowledge base",
             powertools_layer,
             lambda_env,
             props,
@@ -134,23 +191,27 @@ class Embeddings(Construct):
         self,
         name: str,
         handler_path: str,
+        description: str,
         powertools_layer: lambda_.ILayerVersion,
         lambda_env: dict,
         props: EmbeddingsProps,
     ) -> lambda_.IFunction:
         """
-        Create a Lambda function with standard configuration.
+        Create a Lambda function with production configuration.
 
         Args:
             name: Name of the Lambda function
             handler_path: Path to the handler function
+            description: Function description for better observability
             powertools_layer: AWS Lambda Powertools layer
             lambda_env: Common environment variables
             props: Embeddings properties
 
         Returns:
-            Configured Lambda function
+            Configured Lambda function with monitoring
         """
+        lambda_defaults = LambdaConfig.get_lambda_defaults(self, name)
+
         handler_role = iam.Role(
             self,
             f"{name}Role",
@@ -177,6 +238,23 @@ class Embeddings(Construct):
             )
         )
 
+        handler_role.add_managed_policy(
+            iam.ManagedPolicy.from_aws_managed_policy_name(
+                "CloudWatchLambdaInsightsExecutionRolePolicy"
+            )
+        )
+
+        handler_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                ],
+                resources=["*"],
+            )
+        )
+
         return lambda_.DockerImageFunction(
             self,
             name,
@@ -186,9 +264,7 @@ class Embeddings(Construct):
                 cmd=[handler_path],
                 exclude=DOCKER_EXCLUDE_PATTERNS,
             ),
-            architecture=lambda_.Architecture.ARM_64,
-            memory_size=512,
-            timeout=Duration.minutes(1),
+            description=description,
             environment={
                 **lambda_env,
                 "ACCOUNT": Stack.of(self).account,
@@ -200,6 +276,7 @@ class Embeddings(Construct):
             },
             layers=[powertools_layer],
             role=handler_role,
+            **lambda_defaults,
         )
 
     def _create_state_machine(self, props: EmbeddingsProps) -> sfn.StateMachine:
