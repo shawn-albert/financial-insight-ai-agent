@@ -13,8 +13,7 @@ from typing import List
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 
-
-from aws_cdk import CfnOutput, CustomResource, RemovalPolicy
+from aws_cdk import CfnOutput, CustomResource, Duration, RemovalPolicy
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
@@ -80,6 +79,7 @@ class Auth(Construct):
             "PowertoolsLayer",
             version="3.3.0",
             include_extras=True,
+            compatible_architectures=[lambda_.Architecture.ARM_64],
         )
 
         common_lambda_environment = {
@@ -154,7 +154,7 @@ class Auth(Construct):
             "AddUserToGroups",
             runtime=lambda_.Runtime.PYTHON_3_12,
             architecture=lambda_.Architecture.ARM_64,
-            handler="add_user_to_groups.handler",
+            handler="index.handler",
             code=lambda_.Code.from_asset(
                 os.path.join(PROJECT_ROOT, "backend", "auth", "add_user_to_groups")
             ),
@@ -187,6 +187,8 @@ class Auth(Construct):
                 os.path.join(PROJECT_ROOT, "backend", "auth", "cognito_trigger")
             ),
             handler="index.handler",
+            timeout=Duration.minutes(15),
+            memory_size=512,
             environment={
                 **lambda_env,
                 "USER_POOL_ID": self.user_pool.user_pool_id,
@@ -231,7 +233,7 @@ class Auth(Construct):
             "CheckEmailDomain",
             runtime=lambda_.Runtime.PYTHON_3_12,
             architecture=lambda_.Architecture.ARM_64,
-            handler="check_email_domain.handler",
+            handler="index.handler",
             code=lambda_.Code.from_asset(
                 os.path.join(PROJECT_ROOT, "backend", "auth", "check_email_domain")
             ),
