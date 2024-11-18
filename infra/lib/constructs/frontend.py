@@ -6,6 +6,7 @@ for content delivery and S3 for static web hosting. It handles configuration
 of a React frontend application, SSL, WAF, and deployment automation.
 """
 
+import uuid
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -159,7 +160,10 @@ class Frontend(Construct):
             identity_providers: List of identity provider configurations.
         """
         region = Stack.of(auth.user_pool).region
-        cognito_domain = f"{user_pool_domain_prefix}.auth.{region}.amazoncognito.com"
+        unique_suffix = uuid.uuid4().hex[:8]
+        cognito_domain = (
+            f"{user_pool_domain_prefix}-{unique_suffix}.auth.{region}.amazoncognito.com"
+        )
 
         build_env = {
             "VITE_APP_API_ENDPOINT": backend_api_endpoint,
@@ -169,6 +173,9 @@ class Frontend(Construct):
             "VITE_APP_ENABLE_MISTRAL": str(enable_mistral).lower(),
             "VITE_APP_REGION": region,
             "VITE_APP_USE_STREAMING": "true",
+            "VITE_APP_REDIRECT_SIGNIN_URL": self.get_origin(),
+            "VITE_APP_REDIRECT_SIGNOUT_URL": self.get_origin(),
+            "VITE_APP_COGNITO_DOMAIN": cognito_domain,
         }
 
         if identity_providers:
