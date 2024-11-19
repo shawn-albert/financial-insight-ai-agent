@@ -15,14 +15,19 @@ from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from botocore.exceptions import ClientError
 
-USER_POOL_ID: str = os.environ["USER_POOL_ID"]
-AUTO_JOIN_USER_GROUPS: List[str] = json.loads(
-    os.environ.get("AUTO_JOIN_USER_GROUPS", "[]")
-)
-
 logger = Logger()
 tracer = Tracer()
 metrics = Metrics()
+
+USER_POOL_ID: str = os.environ["USER_POOL_ID"]
+try:
+    AUTO_JOIN_USER_GROUPS: List[str] = json.loads(
+        os.environ.get("AUTO_JOIN_USER_GROUPS", "[]")
+    )
+except json.JSONDecodeError:
+    logger.exception("Failed to parse AUTO_JOIN_USER_GROUPS environment variable.")
+    AUTO_JOIN_USER_GROUPS = []
+
 
 cognito = boto3.client("cognito-idp")
 
@@ -54,11 +59,11 @@ def add_user_to_groups(user_pool_id: str, username: str, groups: List[str]) -> N
                 Username=username,
                 GroupName=group,
             )
+            metrics.add_dimension(name="GroupName", value=group)
             metrics.add_metric(
                 name="GroupAddSuccess",
                 unit=MetricUnit.Count,
                 value=1,
-                group_name=group,
             )
         except ClientError as e:
             logger.error(
@@ -71,11 +76,11 @@ def add_user_to_groups(user_pool_id: str, username: str, groups: List[str]) -> N
                     "group": group,
                 },
             )
+            metrics.add_dimension(name="GroupName", value=group)
             metrics.add_metric(
                 name="GroupAddFailure",
                 unit=MetricUnit.Count,
                 value=1,
-                group_name=group,
             )
             raise
 
