@@ -1,14 +1,14 @@
-"""
-Lambda handler for Cognito Trigger custom resource.
+"""Lambda function for managing Cognito User Pool triggers via CloudFormation custom resources.
 
-This module implements the Lambda function that handles the creation, update,
-and deletion of Cognito User Pool triggers through CloudFormation custom resources.
+This module implements a Lambda handler that manages the lifecycle of Cognito User Pool
+triggers through CloudFormation custom resources. It supports creating, updating, and
+deleting trigger configurations while maintaining other user pool settings.
 """
 
 import json
 import os
 import signal
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import boto3
 import urllib3
@@ -28,31 +28,22 @@ def send_cfn_response(
     context: LambdaContext,
     status: str,
     data: Dict[str, Any],
-    physical_resource_id: str | None = None,
+    physical_resource_id: Optional[str] = None,
 ) -> None:
-    """
-    Send a response to CloudFormation about the result of the custom resource.
+    """Send response to CloudFormation regarding the success or failure of the custom resource operation.
 
     Args:
-        event: The Lambda event containing CloudFormation custom resource request
-        context: The Lambda context
-        status: SUCCESS or FAILED
-        data: Response data to send back
-        physical_resource_id: Optional resource ID (defaults to Lambda function ARN)
+        event: Lambda event containing the CloudFormation request details
+        context: Lambda runtime context
+        status: Status of the operation (SUCCESS/FAILED)
+        data: Data to be sent back to CloudFormation
+        physical_resource_id: Unique identifier for the custom resource
+
+    Raises:
+        Exception: If sending the response to CloudFormation fails
     """
     response_url = event["ResponseURL"]
-
-    if not physical_resource_id:
-        physical_resource_id = context.invoked_function_arn
-
-    logger.info(
-        f"Sending response to {response_url}",
-        extra={
-            "status": status,
-            "data": data,
-            "physical_resource_id": physical_resource_id,
-        },
-    )
+    physical_resource_id = physical_resource_id or context.invoked_function_arn
 
     response_body = {
         "Status": status,
@@ -66,54 +57,43 @@ def send_cfn_response(
     }
 
     encoded_response = json.dumps(response_body).encode("utf-8")
-
     headers = {"content-type": "", "content-length": str(len(encoded_response))}
 
-    try:
-        response = http.request(
-            "PUT",
-            response_url,
-            body=encoded_response,
-            headers=headers,
-            retries=urllib3.Retry(3),
-        )
-        logger.info(
-            "CloudFormation response sent successfully",
-            extra={
-                "status_code": response.status,
-                "response": response.data.decode("utf-8"),
-            },
-        )
-    except Exception as e:
-        logger.exception(
-            "Failed to send CloudFormation response", extra={"error": str(e)}
-        )
-        raise
+    response = http.request(
+        "PUT",
+        response_url,
+        body=encoded_response,
+        headers=headers,
+        retries=urllib3.Retry(3),
+    )
+
+    logger.info(f"CloudFormation response status code: {response.status}")
 
 
-@tracer.capture_method
 def update_user_pool_lambda_config(
-    user_pool_id: str, attr: Dict, lambda_config: Dict
+    user_pool_id: str,
+    user_pool_attributes: Dict[str, Any],
+    lambda_config: Dict[str, str],
 ) -> None:
-    """
-    Updates the Lambda configuration of a Cognito user pool.
+    """Update the Lambda trigger configuration for a Cognito User Pool.
 
     Args:
-        user_pool_id: The ID of the Cognito user pool
-        attr: The user pool attributes
-        lambda_config: The Lambda configuration containing the triggers
+        user_pool_id: Identifier of the Cognito User Pool
+        user_pool_attributes: Current attributes of the User Pool
+        lambda_config: New Lambda trigger configuration to apply
+
+    Raises:
+        ClientError: If the User Pool update fails
     """
-    logger.info(
-        "Starting user pool update",
-        extra={
-            "user_pool_id": user_pool_id,
-            "current_lambda_config": json.dumps(attr.get("LambdaConfig", {})),
-            "new_lambda_config": json.dumps(lambda_config),
-        },
-    )
+    if "TemporaryPasswordValidityDays" in user_pool_attributes.get("Policies", {}).get(
+        "PasswordPolicy", {}
+    ):
+        admin_config = user_pool_attributes.get("AdminCreateUserConfig", {})
+        admin_config.pop("UnusedAccountValidityDays", None)
 
     valid_attributes = [
         "Policies",
+        "DeletionProtection",
         "AutoVerifiedAttributes",
         "SmsVerificationMessage",
         "EmailVerificationMessage",
@@ -131,90 +111,62 @@ def update_user_pool_lambda_config(
         "AccountRecoverySetting",
     ]
 
-    update_params = {k: v for k, v in attr.items() if k in valid_attributes}
+    update_params = {
+        k: v for k, v in user_pool_attributes.items() if k in valid_attributes
+    }
 
-    logger.info(
-        "Prepared update parameters",
-        extra={
-            "update_params": json.dumps(update_params),
-            "final_lambda_config": json.dumps(lambda_config),
-        },
-    )
-
-    response = cognito.update_user_pool(
+    cognito.update_user_pool(
         UserPoolId=user_pool_id,
         **update_params,
         LambdaConfig=lambda_config,
-    )
-
-    logger.info(
-        "User pool update completed",
-        extra={
-            "response": json.dumps(response),
-        },
     )
 
 
 @tracer.capture_lambda_handler
 @logger.inject_lambda_context(log_event=True)
 def handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
-    """
-    Handle CloudFormation custom resource requests for Cognito trigger management.
+    """Handle CloudFormation custom resource requests for Cognito User Pool trigger management.
 
     Args:
-        event: Lambda event containing CloudFormation custom resource request
-        context: Lambda context
+        event: CloudFormation custom resource event
+        context: Lambda runtime context
 
     Returns:
-        CloudFormation custom resource response
+        Dict containing the physical resource ID and resource properties
+
+    Raises:
+        Exception: If the requested operation fails
     """
+    request_type = event["RequestType"]
+    physical_id = event.get("PhysicalResourceId", f"{USER_POOL_ID}-triggers")
+    resource_properties = event["ResourceProperties"]
+    triggers = resource_properties["Triggers"]
+
     try:
-        request_type = event["RequestType"]
-        physical_id = event.get("PhysicalResourceId", f"{USER_POOL_ID}-triggers")
-        resource_properties = event["ResourceProperties"]
-        triggers = resource_properties["Triggers"]
+        response = cognito.describe_user_pool(UserPoolId=USER_POOL_ID)
+        user_pool_attributes = response["UserPool"]
+        lambda_config = user_pool_attributes.get("LambdaConfig", {})
 
-        logger.info(
-            "Processing request",
-            extra={
-                "request_type": request_type,
-                "physical_id": physical_id,
-                "triggers": triggers,
-            },
-        )
-
-        if request_type == "Create" or request_type == "Update":
-            response = cognito.describe_user_pool(UserPoolId=USER_POOL_ID)
-            attr = response["UserPool"]
-            lambda_config = attr.get("LambdaConfig", {})
-
-            if request_type == "Create":
-                lambda_config = {**lambda_config, **triggers}
-            else:
-                old_triggers = event.get("OldResourceProperties", {}).get(
-                    "Triggers", {}
-                )
-                lambda_config = {
-                    **{
-                        k: v
-                        for k, v in lambda_config.items()
-                        if k not in old_triggers.keys()
-                    },
-                    **triggers,
-                }
-
-            update_user_pool_lambda_config(USER_POOL_ID, attr, lambda_config)
-
-        elif request_type == "Delete":
-            response = cognito.describe_user_pool(UserPoolId=USER_POOL_ID)
-            attr = response["UserPool"]
-            lambda_config = attr.get("LambdaConfig", {})
-
-            lambda_config = {
+        if request_type == "Create":
+            new_lambda_config = {**lambda_config, **triggers}
+        elif request_type == "Update":
+            old_triggers = event["OldResourceProperties"]["Triggers"]
+            new_lambda_config = {
+                **{
+                    k: v
+                    for k, v in lambda_config.items()
+                    if k not in old_triggers.keys()
+                },
+                **triggers,
+            }
+        else:
+            new_lambda_config = {
                 k: v for k, v in lambda_config.items() if k not in triggers.keys()
             }
 
-            update_user_pool_lambda_config(USER_POOL_ID, attr, lambda_config)
+        update_user_pool_lambda_config(
+            USER_POOL_ID, user_pool_attributes, new_lambda_config
+        )
 
         send_cfn_response(
             event,
@@ -230,7 +182,6 @@ def handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        logger.exception("Failed to process request")
         send_cfn_response(
             event,
             context,
@@ -244,26 +195,16 @@ def handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
         raise
 
 
-def timeout_handler(_signal: int, _frame: Any) -> None:
-    """
-    Handle Lambda timeout signals gracefully by logging and raising exception.
-
-    This function catches SIGALRM signals sent when Lambda is about to timeout,
-    allowing us to log the timeout and raise a proper exception rather than
-    having the function silently killed.
+def timeout_handler(signal_number: int, frame: Any) -> None:
+    """Handle Lambda timeouts gracefully by raising a custom exception.
 
     Args:
-        _signal: Signal number (unused but required by signal.signal)
-        _frame: Current stack frame (unused but required by signal.signal)
+        signal_number: Signal number received
+        frame: Current stack frame
 
     Raises:
         Exception: Always raises with "Lambda timeout" message
-
-    Note:
-        Uses _signal and _frame parameter names to indicate they are unused
-        but required by the signal handling interface.
     """
-    logger.error("Lambda timeout occurred")
     raise Exception("Lambda timeout")
 
 
