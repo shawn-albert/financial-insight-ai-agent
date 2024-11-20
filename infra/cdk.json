@@ -56,7 +56,7 @@
       "8000:0000:0000:0000:0000:0000:0000:0000/1"
     ],
     "identityProviders": [],
-    "userPoolDomainPrefix": "finance-agent",
+    "userPoolDomainPrefix": "finance-ai-agent",
     "allowedSignUpEmailDomains": [],
     "autoJoinUserGroups": ["CreatingBotAllowed"],
     "selfSignUpEnabled": false,
