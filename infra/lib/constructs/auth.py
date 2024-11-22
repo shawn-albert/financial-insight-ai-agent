@@ -6,14 +6,13 @@ supporting multiple identity providers, user groups, and custom triggers for
 user management with full observability and monitoring capabilities.
 """
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-
-from aws_cdk import CfnOutput, CustomResource, Duration, RemovalPolicy
+from aws_cdk import CfnOutput, CustomResource, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
@@ -23,6 +22,8 @@ from cdk_aws_lambda_powertools_layer import LambdaPowertoolsLayer
 
 from constructs import Construct
 
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+
 
 @dataclass
 class AuthProps:
@@ -30,7 +31,7 @@ class AuthProps:
     Properties for Authentication construct configuration.
 
     Attributes:
-        origin: Frontend application origin URL
+        origin: Frontend application origin URL for OAuth configuration
         user_pool_domain_prefix: Prefix for Cognito domain
         identity_providers: List of identity provider configurations
         allowed_signup_email_domains: List of allowed email domains
@@ -133,6 +134,9 @@ class Auth(Construct):
         """
         super().__init__(scope, construct_id)
 
+        if not props.user_pool_domain_prefix:
+            raise ValueError("user_pool_domain_prefix must be provided")
+
         powertools_layer = LambdaPowertoolsLayer(
             self,
             "PowertoolsLayer",
@@ -156,25 +160,33 @@ class Auth(Construct):
                 require_digits=True,
                 min_length=8,
             ),
-            self_sign_up_enabled=props.self_signup_enabled,
+            self_sign_up_enabled=props.self_signup_enabled
+            and not props.identity_providers,
             sign_in_aliases=cognito.SignInAliases(
                 username=False,
                 email=True,
             ),
+            standard_attributes={
+                "email": cognito.StandardAttribute(
+                    required=True,
+                    mutable=True,
+                )
+            },
             removal_policy=RemovalPolicy.DESTROY,
         )
 
         client_props = self._configure_client_props(props)
         self.client = self.user_pool.add_client("Client", **client_props)
 
+        self.user_pool.add_domain(
+            "Domain",
+            cognito_domain=cognito.CognitoDomainOptions(
+                domain_prefix=props.user_pool_domain_prefix,
+            ),
+        )
+
         if props.identity_providers:
             self._configure_identity_providers(props)
-            self.user_pool.add_domain(
-                "Domain",
-                cognito_domain=cognito.CognitoDomainOptions(
-                    domain_prefix=props.user_pool_domain_prefix,
-                ),
-            )
 
         self._create_user_groups()
 
@@ -192,7 +204,7 @@ class Auth(Construct):
                 lambda_env,
             )
 
-        self._create_outputs()
+        self._create_outputs(props)
 
     def _configure_auto_join_groups(
         self,
@@ -220,7 +232,7 @@ class Auth(Construct):
             environment={
                 **lambda_env,
                 "USER_POOL_ID": self.user_pool.user_pool_id,
-                "AUTO_JOIN_USER_GROUPS": str(groups),
+                "AUTO_JOIN_USER_GROUPS": json.dumps(groups),
             },
             layers=[powertools_layer],
             description="Automatically adds newly confirmed users to specified Cognito user groups",
@@ -325,17 +337,24 @@ class Auth(Construct):
             "auth_flows": cognito.AuthFlow(
                 user_password=True,
                 user_srp=True,
+                admin_user_password=True,
             ),
+            "prevent_user_existence_errors": True,
         }
 
-        if not any(props.identity_providers):
+        if not props.identity_providers:
             return default_props
 
         return {
             **default_props,
             "o_auth": cognito.OAuthSettings(
+                flows=cognito.OAuthFlows(
+                    authorization_code_grant=True,
+                    implicit_code_grant=True,
+                ),
                 callback_urls=[props.origin],
                 logout_urls=[props.origin],
+                scopes=[cognito.OAuthScope.EMAIL, cognito.OAuthScope.OPENID],
             ),
             "supported_identity_providers": self._get_supported_providers(
                 props.identity_providers
@@ -457,9 +476,17 @@ class Auth(Construct):
             user_pool_id=self.user_pool.user_pool_id,
         )
 
-    def _create_outputs(self) -> None:
+    def _create_outputs(self, props: AuthProps) -> None:
         """
         Create CloudFormation outputs for authentication resources.
+
+        Args:
+            props: Authentication properties containing configuration values
+
+        Creates outputs for:
+        - User pool ID
+        - User pool client ID
+        - OAuth/IDP configuration if identity providers are enabled
         """
         CfnOutput(
             self,
@@ -474,3 +501,28 @@ class Auth(Construct):
             value=self.client.user_pool_client_id,
             description="ID of the Cognito user pool client",
         )
+
+        if props.identity_providers:
+            region = Stack.of(self.user_pool).region
+            CfnOutput(
+                self,
+                "ApprovedRedirectURI",
+                value=f"https://{props.user_pool_domain_prefix}.auth.{region}.amazoncognito.com/oauth2/idpresponse",
+                description="Approved redirect URI for identity providers",
+            )
+            CfnOutput(
+                self,
+                "CognitoDomain",
+                value=f"{props.user_pool_domain_prefix}.auth.{region}.amazoncognito.com",
+                description="Cognito hosted UI domain",
+            )
+            CfnOutput(
+                self,
+                "SocialProviders",
+                value=",".join(
+                    p["service"]
+                    for p in props.identity_providers
+                    if p["service"] != "oidc"
+                ),
+                description="Configured social identity providers",
+            )
